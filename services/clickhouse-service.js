@@ -11,8 +11,7 @@ class ClickHouseService {
   async connect() {
     try {
       this.client = createClient({
-        url: process.env.CLICKHOUSE_URL,
-        port: Number(process.env.CLICKHOUSE_PORT),
+        url: `${process.env.CLICKHOUSE_URL}:${process.env.CLICKHOUSE_PORT}`,
         username: process.env.CLICKHOUSE_USER,
         password: process.env.CLICKHOUSE_PASSWORD,
         database: process.env.CLICKHOUSE_DB,
