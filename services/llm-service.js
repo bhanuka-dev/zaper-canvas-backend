@@ -80,6 +80,8 @@ CRITICAL RULES:
 12. Keep all field names exactly as they appear in the database schema
 13. ONLY use columns that exist in the provided schema - never invent or assume columns
 14. If asked about non-existent fields, use the closest matching existing column
+15. NEVER use implicit column aliases (like COUNT(*) days_present) - use only function calls without renaming
+16. CRITICAL: Each SELECT item must be properly separated by commas with NO extra text
 
 CARD TYPE GUIDELINES:
 
@@ -168,7 +170,8 @@ EXAMPLE QUERIES:
 - "Staff working outside projects" → SELECT staff_name, COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) GROUP BY staff_name ORDER BY COUNT(*) DESC
 - "Project attendance with names" → SELECT p.project_name, COUNT(d.staff_id) FROM daily_worker_summary d JOIN client_projects p ON d.checkin_project_id = p.project_id WHERE d.is_present = 1 GROUP BY p.project_name ORDER BY COUNT(d.staff_id) DESC
 - "Show this week's check-ins outside projects" → SELECT staff_name, client_name, checkin_lat, checkin_lng, work_date FROM daily_worker_summary WHERE work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7) AND (checkin_project_id IS NULL OR checkin_project_id = -1) AND checkin_time IS NOT NULL ORDER BY work_date DESC
-- "Get people who present this week" → SELECT DISTINCT staff_name FROM daily_worker_summary WHERE work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7) AND is_present = 1 ORDER BY staff_name`;
+- "Get people who present this week" → SELECT DISTINCT staff_name FROM daily_worker_summary WHERE work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7) AND is_present = 1 ORDER BY staff_name
+- "Last week top 10 staff performance" → SELECT staff_name, SUM(total_work_hours), SUM(effective_work_hours), COUNT(*), AVG(attendance_score) FROM daily_worker_summary WHERE work_date >= subtractDays(toMonday(today()), 7) AND work_date < toMonday(today()) GROUP BY staff_name ORDER BY SUM(effective_work_hours) DESC LIMIT 10`;
   }
 
   createQueryGeneratorTool() {
@@ -254,8 +257,11 @@ CRITICAL COLUMN RULES:
 Examples:
 - Use "checkin_lat" NOT "checkin_lat AS lat"
 - Use "SUM(total_work_hours)" NOT "SUM(total_work_hours) AS total_hours"
+- Use "COUNT(*)" NOT "COUNT(*) AS count" or "COUNT(*) days_present"
 - Use "toYear(work_date)" NOT "YEAR"
 - Use "toDayOfWeek(work_date)" NOT "DAY"
+- CORRECT: "SELECT staff_name, SUM(total_work_hours), COUNT(*) FROM..."
+- WRONG: "SELECT staff_name, SUM(total_work_hours) total_hours, COUNT(*) days FROM..."
 - For project queries: "JOIN client_projects p ON d.checkin_project_id = p.project_id"
 
 TIME HANDLING RULES:
@@ -346,6 +352,28 @@ Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
           suggestion: query.replace(new RegExp(`\\b${badCol}\\b`, 'gi'), 'work_date')
         };
       }
+    }
+
+    // Check for the specific problematic pattern: "COUNT(*) has_overtime days_present"
+    if (query.includes('has_overtime days_present') || query.includes('has_overtime') && query.includes('days_present')) {
+      return {
+        valid: false,
+        error: `Invalid syntax detected: improper alias usage. Remove all aliases after aggregate functions.`,
+        suggestion: query
+          .replace(/COUNT\s*\(\s*\*\s*\)\s+has_overtime\s+days_present/gi, 'COUNT(*)')
+          .replace(/has_overtime\s+days_present/gi, '')
+      };
+    }
+
+    // Check for general alias pattern after aggregate functions (but not keywords)
+    const sqlKeywords = 'FROM|WHERE|GROUP|ORDER|HAVING|LIMIT|OFFSET|AND|OR|AS|ASC|DESC|BY|INNER|LEFT|RIGHT|JOIN|ON|IN|NOT|NULL|IS|LIKE|BETWEEN|EXISTS|UNION|ALL|DISTINCT|CASE|WHEN|THEN|ELSE|END';
+    const aliasAfterFunction = new RegExp(`\\b(COUNT|SUM|AVG|MAX|MIN)\\s*\\([^)]*\\)\\s+(?!${sqlKeywords})\\w+`, 'gi');
+    if (aliasAfterFunction.test(query)) {
+      return {
+        valid: false,
+        error: `Invalid alias usage detected. Do not use aliases after aggregate functions. Use functions directly: COUNT(*), SUM(column), etc.`,
+        suggestion: query.replace(aliasAfterFunction, '$1($2)')
+      };
     }
 
     // For JOIN queries, collect all valid columns from all available tables
