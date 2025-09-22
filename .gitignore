@@ -41,3 +41,7 @@ dist/
 # Temporary files
 *.tmp
 *.temp
+
+
+git_snapshot.txt
+git_common.txt
