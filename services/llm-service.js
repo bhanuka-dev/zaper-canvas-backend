@@ -132,14 +132,18 @@ DATETIME HANDLING (CRITICAL):
 - For latest time: MAX(checkout_time)
 - For time differences: dateDiff('minute', checkin_time, checkout_time)
 - For time formatting: formatDateTime(checkin_time, '%H:%M')
+- NEVER use column name 'DAY' - it does not exist! Use work_date instead
 
-DATE-BASED FILTERING (RECOMMENDED):
+DATE-BASED FILTERING (CRITICAL - EXACT SYNTAX):
+- For "this week": WHERE work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7)
 - For "this month": WHERE toYYYYMM(work_date) = toYYYYMM(today())
 - For "last month": WHERE toYYYYMM(work_date) = toYYYYMM(addMonths(today(), -1))
 - For "this year": WHERE toYear(work_date) = toYear(today())
 - For "last year": WHERE toYear(work_date) = toYear(today()) - 1
-- For "recent days": WHERE work_date >= today() - INTERVAL 7 DAY
+- For "recent 7 days": WHERE work_date >= today() - 7
 - For "this quarter": WHERE toQuarter(work_date) = toQuarter(today()) AND toYear(work_date) = toYear(today())
+- For "yesterday": WHERE work_date = yesterday()
+- For "today": WHERE work_date = today()
 
 IMPORTANT LIMITATIONS:
 - NO earnings, payment, or salary data available in this schema
@@ -162,7 +166,9 @@ EXAMPLE QUERIES:
 - "People present at projects" → SELECT COUNT(*) FROM daily_worker_summary WHERE checkin_project_id IS NOT NULL AND checkin_project_id != -1 AND is_present = 1
 - "People outside project locations" → SELECT COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) AND is_present = 1
 - "Staff working outside projects" → SELECT staff_name, COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) GROUP BY staff_name ORDER BY COUNT(*) DESC
-- "Project attendance with names" → SELECT p.project_name, COUNT(d.staff_id) FROM daily_worker_summary d JOIN client_projects p ON d.checkin_project_id = p.project_id WHERE d.is_present = 1 GROUP BY p.project_name ORDER BY COUNT(d.staff_id) DESC`;
+- "Project attendance with names" → SELECT p.project_name, COUNT(d.staff_id) FROM daily_worker_summary d JOIN client_projects p ON d.checkin_project_id = p.project_id WHERE d.is_present = 1 GROUP BY p.project_name ORDER BY COUNT(d.staff_id) DESC
+- "Show this week's check-ins outside projects" → SELECT staff_name, client_name, checkin_lat, checkin_lng, work_date FROM daily_worker_summary WHERE work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7) AND (checkin_project_id IS NULL OR checkin_project_id = -1) AND checkin_time IS NOT NULL ORDER BY work_date DESC
+- "Get people who present this week" → SELECT DISTINCT staff_name FROM daily_worker_summary WHERE work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7) AND is_present = 1 ORDER BY staff_name`;
   }
 
   createQueryGeneratorTool() {
@@ -234,14 +240,22 @@ Generate a ClickHouse SQL query that:
 6. For project-related queries, JOIN with client_projects when needed
 7. Remember: checkin_project_id/checkout_project_id NULL or -1 = outside project location
 8. CRITICAL: Use work_date with ClickHouse date functions for time filtering (e.g., toYYYYMM(work_date))
+9. NEVER use columns like DAY, WEEK, MONTH, YEAR - these do NOT exist! Use work_date instead!
 
 AVAILABLE TABLES:
 ${availableTables}
 
 IMPORTANT: Use exact column names from the schema. Do NOT rename columns with AS aliases.
+CRITICAL COLUMN RULES:
+- NEVER use DAY, WEEK, MONTH, YEAR as column names - they DO NOT EXIST!
+- Always use work_date with functions: toYear(work_date), toMonth(work_date), toDayOfWeek(work_date)
+- For weekly filtering: work_date >= toMonday(today()) AND work_date < addDays(toMonday(today()), 7)
+
 Examples:
 - Use "checkin_lat" NOT "checkin_lat AS lat"
 - Use "SUM(total_work_hours)" NOT "SUM(total_work_hours) AS total_hours"
+- Use "toYear(work_date)" NOT "YEAR"
+- Use "toDayOfWeek(work_date)" NOT "DAY"
 - For project queries: "JOIN client_projects p ON d.checkin_project_id = p.project_id"
 
 TIME HANDLING RULES:
@@ -322,6 +336,18 @@ Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
   }
 
   validateQuery(query, tableName = 'daily_worker_summary') {
+    // Check for common problematic column names first
+    const problematicColumns = ['DAY', 'WEEK', 'MONTH', 'YEAR'];
+    for (const badCol of problematicColumns) {
+      if (query.toUpperCase().includes(badCol) && !query.toUpperCase().includes(`${badCol}(`)) {
+        return {
+          valid: false,
+          error: `Column '${badCol}' does not exist in table ${tableName}. Use 'work_date' with ClickHouse date functions like toYear(work_date), toMonth(work_date), etc.`,
+          suggestion: query.replace(new RegExp(`\\b${badCol}\\b`, 'gi'), 'work_date')
+        };
+      }
+    }
+
     // For JOIN queries, collect all valid columns from all available tables
     let validColumns = [];
     let validTables = [];
@@ -388,6 +414,8 @@ Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
                  match !== 'toStartOfMonth' && match !== 'toStartOfYear' && match !== 'dateDiff' &&
                  match !== 'dateAdd' && match !== 'parseDateTime' && match !== 'unixTimestamp' &&
                  match !== 'addMonths' && match !== 'addDays' && match !== 'addYears' &&
+                 match !== 'toMonday' && match !== 'toSunday' && match !== 'toLastDayOfMonth' &&
+                 match !== 'toQuarter' && match !== 'toRelativeYearNum' && match !== 'toRelativeMonthNum' &&
                  match !== 'p' && match !== 'd' && // Common JOIN aliases
                  !validTables.includes(match) &&
                  !/^\d+$/.test(match) && // Skip numbers

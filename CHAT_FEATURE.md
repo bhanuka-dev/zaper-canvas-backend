@@ -245,10 +245,6 @@ The `daily_worker_summary` table contains:
 
 ### 📅 Time Dimensions
 - `work_date` - Daily work date
-- `work_month` - YYYYMM format for monthly analysis
-- `work_year` - Year for yearly aggregations
-- `work_quarter` - Quarter (1-4)
-- `weekday` - Day of week (1=Monday, 7=Sunday)
 
 ### ⏰ Time Tracking
 - `checkin_time`, `checkout_time` - Daily timestamps
@@ -261,12 +257,6 @@ The `daily_worker_summary` table contains:
 - `checkin_lat`, `checkin_lng` - Check-in GPS coordinates
 - `checkout_lat`, `checkout_lng` - Check-out GPS coordinates
 - Perfect for real-time location mapping and geofencing
-
-### 💰 Financial Data
-- `work_amount` - Daily work earnings
-- `overtime_amount` - Overtime earnings
-- `fine_amount` - Any fines applied
-- `total_earnings` - Net daily earnings
 
 ### 📈 Performance Metrics
 - `is_present` - Attendance flag (1/0)
