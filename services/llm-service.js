@@ -26,19 +26,10 @@ class LLMService {
           { name: 'total_work_hours', type: 'Decimal(9, 2)', description: 'Total work hours with 2 decimal precision' },
           { name: 'total_break_hours', type: 'Decimal(9, 2)', description: 'Total break hours' },
           { name: 'overtime_hours', type: 'Decimal(9, 2)', description: 'Overtime hours' },
-          { name: 'work_amount', type: 'Decimal(18, 2)', description: 'Daily work earnings' },
-          { name: 'overtime_amount', type: 'Decimal(18, 2)', description: 'Overtime earnings' },
-          { name: 'fine_amount', type: 'Decimal(18, 2)', description: 'Fine amount if any' },
-          { name: 'weekday', type: 'UInt8', description: 'Day of week (1=Monday, 7=Sunday)' },
           { name: 'leave_type', type: 'LowCardinality(Nullable(String))', description: 'Leave type if absent' },
-          { name: 'work_month', type: 'UInt16', description: 'Year-month for monthly aggregations (YYYYMM format)' },
-          { name: 'work_year', type: 'UInt16', description: 'Year for yearly aggregations' },
-          { name: 'work_quarter', type: 'UInt8', description: 'Quarter for quarterly analysis (1-4)' },
           { name: 'is_present', type: 'UInt8', description: 'Attendance flag (1=present, 0=absent)' },
           { name: 'has_overtime', type: 'UInt8', description: 'Overtime flag (1=has overtime, 0=no overtime)' },
-          { name: 'has_fine', type: 'UInt8', description: 'Fine flag (1=has fine, 0=no fine)' },
           { name: 'effective_work_hours', type: 'Decimal(9, 2)', description: 'Net productive hours (total_work_hours - total_break_hours)' },
-          { name: 'total_earnings', type: 'Decimal(18, 2)', description: 'Net daily earnings (work_amount + overtime_amount - fine_amount)' },
           { name: 'attendance_score', type: 'Float32', description: 'Attendance performance score' },
           { name: 'created_at', type: 'DateTime', description: 'Record creation timestamp' }
         ]
@@ -121,22 +112,53 @@ KPI CARD:
 - Use meaningful aliases for the metrics
 
 COMMON PATTERNS:
-- For time-based queries: GROUP BY work_date, work_month, work_year, work_quarter
+- For daily queries: GROUP BY work_date
+- For monthly queries: GROUP BY toYYYYMM(work_date)
+- For yearly queries: GROUP BY toYear(work_date)
+- For quarterly queries: GROUP BY toQuarter(work_date)
+- For weekday analysis: GROUP BY toDayOfWeek(work_date)
 - For staff analysis: GROUP BY staff_name, staff_id
 - For client analysis: GROUP BY client_name, client_id
 - For attendance: Use is_present, leave_type
-- For earnings: Use total_earnings, work_amount, overtime_amount
 - For time analysis: Use total_work_hours, overtime_hours, effective_work_hours
 - For project location tracking: Use checkin_project_id, checkout_project_id (NULL or -1 = outside project)
 - For project analysis: JOIN with client_projects table on project_id
 - For location-based queries: Use latitude/longitude from both tables
 
+DATETIME HANDLING (CRITICAL):
+- NEVER use AVG() directly on DateTime columns like checkin_time, checkout_time
+- For average check-in hour: AVG(toHour(checkin_time))
+- For earliest time: MIN(checkin_time)
+- For latest time: MAX(checkout_time)
+- For time differences: dateDiff('minute', checkin_time, checkout_time)
+- For time formatting: formatDateTime(checkin_time, '%H:%M')
+
+DATE-BASED FILTERING (RECOMMENDED):
+- For "this month": WHERE toYYYYMM(work_date) = toYYYYMM(today())
+- For "last month": WHERE toYYYYMM(work_date) = toYYYYMM(addMonths(today(), -1))
+- For "this year": WHERE toYear(work_date) = toYear(today())
+- For "last year": WHERE toYear(work_date) = toYear(today()) - 1
+- For "recent days": WHERE work_date >= today() - INTERVAL 7 DAY
+- For "this quarter": WHERE toQuarter(work_date) = toQuarter(today()) AND toYear(work_date) = toYear(today())
+
+IMPORTANT LIMITATIONS:
+- NO earnings, payment, or salary data available in this schema
+- Cannot determine "paid" vs "unpaid" status - no payment columns exist
+- Focus on attendance, work hours, and location tracking instead
+- For payment-related queries, explain that payment data is not available and suggest alternatives
+
 EXAMPLE QUERIES:
 - "Show total hours by staff" → SELECT staff_name, SUM(total_work_hours) FROM daily_worker_summary GROUP BY staff_name ORDER BY SUM(total_work_hours) DESC LIMIT 20
-- "Monthly earnings trend" → SELECT work_month, SUM(total_earnings) FROM daily_worker_summary GROUP BY work_month ORDER BY work_month LIMIT 12
+- "Monthly work hours trend" → SELECT toYYYYMM(work_date), SUM(total_work_hours) FROM daily_worker_summary GROUP BY toYYYYMM(work_date) ORDER BY toYYYYMM(work_date) DESC LIMIT 12
+- "Last month staff count" → SELECT COUNT(DISTINCT staff_id) FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(addMonths(today(), -1))
+- "Current month data" → SELECT COUNT(*) FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(today())
+- "How many staff worked last month" → SELECT COUNT(DISTINCT staff_id) FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(addMonths(today(), -1))
+- "Staff count this month" → SELECT COUNT(DISTINCT staff_id) FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(today())
 - "Attendance rate KPI" → SELECT AVG(is_present) * 100 FROM daily_worker_summary
+- "Top 10 staff by check-in times" → SELECT staff_name, AVG(toHour(checkin_time)) FROM daily_worker_summary WHERE checkin_time IS NOT NULL GROUP BY staff_name ORDER BY AVG(toHour(checkin_time)) ASC LIMIT 10
+- "Earliest check-in times" → SELECT staff_name, MIN(checkin_time) FROM daily_worker_summary WHERE checkin_time IS NOT NULL GROUP BY staff_name ORDER BY MIN(checkin_time) ASC LIMIT 10
 - "Check-in locations map" → SELECT checkin_lat, checkin_lng, staff_name, client_name, total_work_hours FROM daily_worker_summary WHERE checkin_lat IS NOT NULL AND checkin_lng IS NOT NULL LIMIT 100
-- "Work sites by earnings" → SELECT checkin_lat, checkin_lng, SUM(total_earnings) FROM daily_worker_summary WHERE checkin_lat IS NOT NULL GROUP BY checkin_lat, checkin_lng ORDER BY SUM(total_earnings) DESC LIMIT 50
+- "Work sites by hours" → SELECT checkin_lat, checkin_lng, SUM(total_work_hours) FROM daily_worker_summary WHERE checkin_lat IS NOT NULL GROUP BY checkin_lat, checkin_lng ORDER BY SUM(total_work_hours) DESC LIMIT 50
 - "People present at projects" → SELECT COUNT(*) FROM daily_worker_summary WHERE checkin_project_id IS NOT NULL AND checkin_project_id != -1 AND is_present = 1
 - "People outside project locations" → SELECT COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) AND is_present = 1
 - "Staff working outside projects" → SELECT staff_name, COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) GROUP BY staff_name ORDER BY COUNT(*) DESC
@@ -211,6 +233,7 @@ Generate a ClickHouse SQL query that:
 5. NEVER uses column aliases (AS) - use original column names only
 6. For project-related queries, JOIN with client_projects when needed
 7. Remember: checkin_project_id/checkout_project_id NULL or -1 = outside project location
+8. CRITICAL: Use work_date with ClickHouse date functions for time filtering (e.g., toYYYYMM(work_date))
 
 AVAILABLE TABLES:
 ${availableTables}
@@ -220,6 +243,13 @@ Examples:
 - Use "checkin_lat" NOT "checkin_lat AS lat"
 - Use "SUM(total_work_hours)" NOT "SUM(total_work_hours) AS total_hours"
 - For project queries: "JOIN client_projects p ON d.checkin_project_id = p.project_id"
+
+TIME HANDLING RULES:
+- For time-based aggregations, use toHour() function: "toHour(checkin_time)"
+- For time comparisons, convert to comparable format: "formatDateTime(checkin_time, '%H:%M')"
+- NEVER use AVG() directly on DateTime fields - convert first: "AVG(toUInt32(toHour(checkin_time)))"
+- For "earliest/latest" times, use MIN()/MAX(): "MIN(checkin_time)", "MAX(checkout_time)"
+- For time differences, use dateDiff(): "dateDiff('minute', checkin_time, checkout_time)"
 
 Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
 
@@ -329,7 +359,11 @@ Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
                  match !== 'NULL' && match !== 'ASC' && match !== 'DESC' &&
                  match !== 'UNION' && match !== 'ALL' && match !== 'SUM' &&
                  match !== 'COUNT' && match !== 'AVG' && match !== 'MAX' &&
-                 match !== 'MIN' && match !== 'JOIN' && match !== 'ON' &&
+                 match !== 'MIN' && match !== 'countIf' && match !== 'sumIf' &&
+                 match !== 'avgIf' && match !== 'maxIf' && match !== 'minIf' &&
+                 match !== 'countDistinct' && match !== 'uniq' && match !== 'uniqExact' &&
+                 match !== 'toWeek' && match !== 'toDayOfYear' && match !== 'toWeekOfYear' &&
+                 match !== 'JOIN' && match !== 'ON' &&
                  match !== 'INNER' && match !== 'LEFT' && match !== 'RIGHT' &&
                  match !== 'AS' && match !== 'CASE' && match !== 'WHEN' &&
                  match !== 'THEN' && match !== 'ELSE' && match !== 'END' &&
@@ -347,6 +381,13 @@ Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
                  match !== 'tomorrow' && match !== 'addDays' && match !== 'subtractDays' &&
                  match !== 'toYYYYMM' && match !== 'toYear' && match !== 'toMonth' &&
                  match !== 'toDayOfWeek' && match !== 'toHour' && match !== 'toMinute' &&
+                 match !== 'toUInt32' && match !== 'toInt32' && match !== 'toUInt64' &&
+                 match !== 'toInt64' && match !== 'toFloat32' && match !== 'toFloat64' &&
+                 match !== 'toString' && match !== 'toDecimal' && match !== 'toBool' &&
+                 match !== 'toStartOfHour' && match !== 'toStartOfDay' && match !== 'toStartOfWeek' &&
+                 match !== 'toStartOfMonth' && match !== 'toStartOfYear' && match !== 'dateDiff' &&
+                 match !== 'dateAdd' && match !== 'parseDateTime' && match !== 'unixTimestamp' &&
+                 match !== 'addMonths' && match !== 'addDays' && match !== 'addYears' &&
                  match !== 'p' && match !== 'd' && // Common JOIN aliases
                  !validTables.includes(match) &&
                  !/^\d+$/.test(match) && // Skip numbers
