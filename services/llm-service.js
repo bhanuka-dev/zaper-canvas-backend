@@ -21,6 +21,8 @@ class LLMService {
           { name: 'checkin_lng', type: 'Nullable(Float64)', description: 'Check-in longitude coordinate' },
           { name: 'checkout_lat', type: 'Nullable(Float64)', description: 'Check-out latitude coordinate' },
           { name: 'checkout_lng', type: 'Nullable(Float64)', description: 'Check-out longitude coordinate' },
+          { name: 'checkin_project_id', type: 'Nullable(Int32)', description: 'Check-in project ID (NULL or -1 = outside project location)' },
+          { name: 'checkout_project_id', type: 'Nullable(Int32)', description: 'Check-out project ID (NULL or -1 = outside project location)' },
           { name: 'total_work_hours', type: 'Decimal(9, 2)', description: 'Total work hours with 2 decimal precision' },
           { name: 'total_break_hours', type: 'Decimal(9, 2)', description: 'Total break hours' },
           { name: 'overtime_hours', type: 'Decimal(9, 2)', description: 'Overtime hours' },
@@ -39,6 +41,24 @@ class LLMService {
           { name: 'total_earnings', type: 'Decimal(18, 2)', description: 'Net daily earnings (work_amount + overtime_amount - fine_amount)' },
           { name: 'attendance_score', type: 'Float32', description: 'Attendance performance score' },
           { name: 'created_at', type: 'DateTime', description: 'Record creation timestamp' }
+        ]
+      },
+      'client_projects': {
+        name: 'client_projects',
+        description: 'Client projects with location and metadata information',
+        columns: [
+          { name: 'project_id', type: 'UInt32', description: 'Unique project identifier' },
+          { name: 'client_id', type: 'UInt32', description: 'Client ID that owns this project' },
+          { name: 'project_name', type: 'LowCardinality(String)', description: 'Short project name for display' },
+          { name: 'project_code', type: 'LowCardinality(Nullable(String))', description: 'Project code/abbreviation for reference' },
+          { name: 'project_full_name', type: 'String', description: 'Complete project name with full details' },
+          { name: 'latitude', type: 'Nullable(Float64)', description: 'Project location latitude coordinate' },
+          { name: 'longitude', type: 'Nullable(Float64)', description: 'Project location longitude coordinate' },
+          { name: 'is_active', type: 'UInt8', description: 'Project active status (1=active, 0=inactive)' },
+          { name: 'created_at', type: 'DateTime', description: 'Record creation timestamp' },
+          { name: 'updated_at', type: 'DateTime', description: 'Last update timestamp' },
+          { name: 'has_location', type: 'UInt8', description: 'Whether project has GPS coordinates (1=has location, 0=no location)' },
+          { name: 'location_string', type: 'String', description: 'Formatted location string for display' }
         ]
       }
     };
@@ -67,6 +87,8 @@ CRITICAL RULES:
 10. Do NOT wrap queries in markdown code blocks
 11. NEVER use column aliases with AS - always use original database column names
 12. Keep all field names exactly as they appear in the database schema
+13. ONLY use columns that exist in the provided schema - never invent or assume columns
+14. If asked about non-existent fields, use the closest matching existing column
 
 CARD TYPE GUIDELINES:
 
@@ -105,13 +127,20 @@ COMMON PATTERNS:
 - For attendance: Use is_present, leave_type
 - For earnings: Use total_earnings, work_amount, overtime_amount
 - For time analysis: Use total_work_hours, overtime_hours, effective_work_hours
+- For project location tracking: Use checkin_project_id, checkout_project_id (NULL or -1 = outside project)
+- For project analysis: JOIN with client_projects table on project_id
+- For location-based queries: Use latitude/longitude from both tables
 
 EXAMPLE QUERIES:
 - "Show total hours by staff" → SELECT staff_name, SUM(total_work_hours) FROM daily_worker_summary GROUP BY staff_name ORDER BY SUM(total_work_hours) DESC LIMIT 20
 - "Monthly earnings trend" → SELECT work_month, SUM(total_earnings) FROM daily_worker_summary GROUP BY work_month ORDER BY work_month LIMIT 12
 - "Attendance rate KPI" → SELECT AVG(is_present) * 100 FROM daily_worker_summary
 - "Check-in locations map" → SELECT checkin_lat, checkin_lng, staff_name, client_name, total_work_hours FROM daily_worker_summary WHERE checkin_lat IS NOT NULL AND checkin_lng IS NOT NULL LIMIT 100
-- "Work sites by earnings" → SELECT checkin_lat, checkin_lng, SUM(total_earnings) FROM daily_worker_summary WHERE checkin_lat IS NOT NULL GROUP BY checkin_lat, checkin_lng ORDER BY SUM(total_earnings) DESC LIMIT 50`;
+- "Work sites by earnings" → SELECT checkin_lat, checkin_lng, SUM(total_earnings) FROM daily_worker_summary WHERE checkin_lat IS NOT NULL GROUP BY checkin_lat, checkin_lng ORDER BY SUM(total_earnings) DESC LIMIT 50
+- "People present at projects" → SELECT COUNT(*) FROM daily_worker_summary WHERE checkin_project_id IS NOT NULL AND checkin_project_id != -1 AND is_present = 1
+- "People outside project locations" → SELECT COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) AND is_present = 1
+- "Staff working outside projects" → SELECT staff_name, COUNT(*) FROM daily_worker_summary WHERE (checkin_project_id IS NULL OR checkin_project_id = -1) GROUP BY staff_name ORDER BY COUNT(*) DESC
+- "Project attendance with names" → SELECT p.project_name, COUNT(d.staff_id) FROM daily_worker_summary d JOIN client_projects p ON d.checkin_project_id = p.project_id WHERE d.is_present = 1 GROUP BY p.project_name ORDER BY COUNT(d.staff_id) DESC`;
   }
 
   createQueryGeneratorTool() {
@@ -165,24 +194,32 @@ EXAMPLE QUERIES:
       }
 
       // Create the prompt with context
+      const availableTables = Object.keys(this.tableSchema).map(name => {
+        const table = this.tableSchema[name];
+        return `${table.name}: ${table.description}\nColumns: ${table.columns.map(col => `${col.name} (${col.type})`).join(', ')}`;
+      }).join('\n\n');
+
       const prompt = `
 USER REQUEST: "${userMessage}"
 CARD TYPE: ${cardType}
 
 Generate a ClickHouse SQL query that:
 1. Answers the user's request for a ${cardType} visualization
-2. Uses ONLY the daily_worker_summary table
+2. Can use tables: daily_worker_summary, client_projects
 3. Returns clean SQL without markdown or explanations
 4. Is optimized for ${cardType} display
 5. NEVER uses column aliases (AS) - use original column names only
+6. For project-related queries, JOIN with client_projects when needed
+7. Remember: checkin_project_id/checkout_project_id NULL or -1 = outside project location
 
-TABLE: ${tableInfo.name}
-COLUMNS: ${tableInfo.columns.map(col => `${col.name} (${col.type})`).join(', ')}
+AVAILABLE TABLES:
+${availableTables}
 
 IMPORTANT: Use exact column names from the schema. Do NOT rename columns with AS aliases.
 Examples:
 - Use "checkin_lat" NOT "checkin_lat AS lat"
 - Use "SUM(total_work_hours)" NOT "SUM(total_work_hours) AS total_hours"
+- For project queries: "JOIN client_projects p ON d.checkin_project_id = p.project_id"
 
 Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
 
@@ -254,10 +291,119 @@ Generate ONLY the SQL query using the generate_clickhouse_query tool.`;
     }
   }
 
+  validateQuery(query, tableName = 'daily_worker_summary') {
+    // For JOIN queries, collect all valid columns from all available tables
+    let validColumns = [];
+    let validTables = [];
+
+    // Check if this is a JOIN query
+    const isJoinQuery = query.toUpperCase().includes('JOIN');
+
+    if (isJoinQuery) {
+      // For JOIN queries, include columns from all tables
+      Object.values(this.tableSchema).forEach(table => {
+        validTables.push(table.name);
+        validColumns = validColumns.concat(table.columns.map(col => col.name));
+      });
+    } else {
+      // For single table queries, use only the specified table
+      const tableInfo = this.tableSchema[tableName];
+      if (!tableInfo) {
+        return { valid: false, error: `Table ${tableName} not found in schema` };
+      }
+      validColumns = tableInfo.columns.map(col => col.name);
+      validTables = [tableName];
+    }
+
+    // Simple column validation - look for column names in the query
+    const usedColumns = [];
+    const columnMatches = query.match(/\b(\w+)\b/g) || [];
+
+    for (const match of columnMatches) {
+      if (validColumns.includes(match)) {
+        usedColumns.push(match);
+      } else if (match !== 'SELECT' && match !== 'FROM' && match !== 'WHERE' &&
+                 match !== 'GROUP' && match !== 'BY' && match !== 'ORDER' &&
+                 match !== 'LIMIT' && match !== 'OFFSET' && match !== 'AND' &&
+                 match !== 'OR' && match !== 'IS' && match !== 'NOT' &&
+                 match !== 'NULL' && match !== 'ASC' && match !== 'DESC' &&
+                 match !== 'UNION' && match !== 'ALL' && match !== 'SUM' &&
+                 match !== 'COUNT' && match !== 'AVG' && match !== 'MAX' &&
+                 match !== 'MIN' && match !== 'JOIN' && match !== 'ON' &&
+                 match !== 'INNER' && match !== 'LEFT' && match !== 'RIGHT' &&
+                 match !== 'AS' && match !== 'CASE' && match !== 'WHEN' &&
+                 match !== 'THEN' && match !== 'ELSE' && match !== 'END' &&
+                 match !== 'IF' && match !== 'HAVING' && match !== 'DISTINCT' &&
+                 match !== 'WITH' && match !== 'CAST' && match !== 'EXTRACT' &&
+                 match !== 'DATE' && match !== 'TIME' && match !== 'TIMESTAMP' &&
+                 match !== 'INTERVAL' && match !== 'BETWEEN' && match !== 'IN' &&
+                 match !== 'EXISTS' && match !== 'LIKE' && match !== 'ILIKE' &&
+                 match !== 'SUBSTRING' && match !== 'LENGTH' && match !== 'LOWER' &&
+                 match !== 'UPPER' && match !== 'TRIM' && match !== 'ROUND' &&
+                 match !== 'FLOOR' && match !== 'CEIL' && match !== 'ABS' &&
+                 match !== 'COALESCE' && match !== 'NULLIF' && match !== 'toDate' &&
+                 match !== 'toDateTime' && match !== 'formatDateTime' &&
+                 match !== 'today' && match !== 'now' && match !== 'yesterday' &&
+                 match !== 'tomorrow' && match !== 'addDays' && match !== 'subtractDays' &&
+                 match !== 'toYYYYMM' && match !== 'toYear' && match !== 'toMonth' &&
+                 match !== 'toDayOfWeek' && match !== 'toHour' && match !== 'toMinute' &&
+                 match !== 'p' && match !== 'd' && // Common JOIN aliases
+                 !validTables.includes(match) &&
+                 !/^\d+$/.test(match) && // Skip numbers
+                 !/^'.*'$/.test(match)) { // Skip quoted strings
+
+        // Check if this might be an invalid column
+        const similarColumn = validColumns.find(col =>
+          col.toLowerCase().includes(match.toLowerCase()) ||
+          match.toLowerCase().includes(col.toLowerCase())
+        );
+
+        if (similarColumn) {
+          return {
+            valid: false,
+            error: `Column '${match}' not found. Did you mean '${similarColumn}'?`,
+            suggestion: query.replace(new RegExp(`\\b${match}\\b`, 'g'), similarColumn)
+          };
+        } else {
+          return {
+            valid: false,
+            error: `Column '${match}' does not exist in table ${tableName}`,
+            availableColumns: validColumns
+          };
+        }
+      }
+    }
+
+    return { valid: true, usedColumns };
+  }
+
   async executeGeneratedQuery(queryResult) {
     try {
       if (!queryResult.success || !queryResult.query) {
         throw new Error('Invalid query result provided');
+      }
+
+      // Validate the query before execution
+      const validation = this.validateQuery(queryResult.query, queryResult.tableName);
+      if (!validation.valid) {
+        console.warn('Query validation failed:', validation.error);
+
+        // If we have a suggestion, try using it
+        if (validation.suggestion) {
+          console.log('Trying suggested query:', validation.suggestion);
+          queryResult.query = validation.suggestion;
+        } else {
+          return {
+            success: false,
+            error: `Query validation failed: ${validation.error}`,
+            data: [],
+            query: queryResult.query,
+            explanation: queryResult.explanation,
+            cardType: queryResult.cardType,
+            columns: queryResult.columns,
+            validationError: validation
+          };
+        }
       }
 
       // Execute the query using the ClickHouse service

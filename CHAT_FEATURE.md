@@ -94,7 +94,22 @@ OPENAI_API_KEY=your_actual_openai_api_key_here
 npm run dev
 ```
 
-### 📍 NEW: Location Endpoint
+### 🔍 NEW: Column Validation Endpoint
+
+Get detailed column information for query building:
+
+```bash
+# Get all columns with type information
+GET /api/tables/daily_worker_summary/columns
+```
+
+Returns column details including:
+- Data types (numeric, string, date, location)
+- Nullable status
+- Descriptions
+- Perfect for building query interfaces
+
+### 📍 Location Endpoint
 
 Access real GPS coordinates directly:
 
@@ -113,6 +128,31 @@ GET /api/tables/daily_worker_summary/locations?type=checkout&includeMetrics=earn
 - `type`: `checkin`, `checkout`, or `both`
 - `includeMetrics`: `basic`, `earnings`, `hours`, or `all`
 - `limit`: Number of records (default: 100)
+
+### 🎭 NEW: Dummy Data Endpoint
+
+For empty card states, get sample demonstration data:
+
+```bash
+# Use this endpoint instead of /api/query/execute when cards are empty
+POST /api/query/execute/dummy
+
+# Request body (same structure as real execute endpoint)
+{
+  "cardType": "table",  // or "bar", "line", "pie", "map", "kpi"
+  "page": 1,
+  "pageSize": 5
+}
+```
+
+**Sample Data Sets:**
+- **Table**: Countries with capitals, currencies, populations
+- **Bar/Line**: Monthly sales data (12 months)
+- **Pie**: Market share by technology categories
+- **Map**: Dubai landmarks (Burj Khalifa, Dubai Mall, etc.)
+- **KPI**: Business metrics with change indicators
+
+**Response Structure**: Identical to real execute endpoint plus `isDummy: true` flag.
 
 ## 🧪 Testing Examples
 
@@ -175,6 +215,24 @@ curl -X POST http://localhost:3001/api/chat \
     "message": "show work sites by total earnings with coordinates",
     "cardType": "map"
   }'
+```
+
+#### Dummy Data Examples (NEW!)
+```bash
+# Table with countries data
+curl -X POST http://localhost:3001/api/query/execute/dummy \
+  -H "Content-Type: application/json" \
+  -d '{"cardType": "table", "page": 1, "pageSize": 3}'
+
+# Dubai landmarks map
+curl -X POST http://localhost:3001/api/query/execute/dummy \
+  -H "Content-Type: application/json" \
+  -d '{"cardType": "map"}'
+
+# KPI metrics
+curl -X POST http://localhost:3001/api/query/execute/dummy \
+  -H "Content-Type: application/json" \
+  -d '{"cardType": "kpi"}'
 ```
 
 ## 📊 Available Data Fields
@@ -262,9 +320,51 @@ Your Canvas frontend can now integrate this chat feature by:
 4. Integrate into your frontend Canvas application
 5. Consider adding more tables to the schema as your database grows
 
+## 🎯 NEW: Project Location Tracking
+
+### Enhanced Schema Features
+- **Check-in/Check-out Project Tracking**: `checkin_project_id`, `checkout_project_id` columns
+- **Multi-table JOIN Support**: Seamless integration with `client_projects` table
+- **Location Intelligence**: Track work inside vs outside project boundaries
+
+### Project Location Query Examples
+```bash
+# People who checked in outside project locations
+curl -X POST http://localhost:3001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Show people who checked in outside project locations",
+    "cardType": "table"
+  }'
+
+# Number of people present at each project
+curl -X POST http://localhost:3001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Show number of people present at each project with project details",
+    "cardType": "table"
+  }'
+
+# Count of outside check-ins today
+curl -X POST http://localhost:3001/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "How many people checked in outside project locations today",
+    "cardType": "kpi"
+  }'
+```
+
+### Advanced Query Capabilities
+- **JOIN Operations**: Automatic JOIN with client_projects table when needed
+- **Project Status Analysis**: Inside vs outside project location tracking
+- **Real-time Location Intelligence**: Today's check-in patterns
+- **Multi-dimensional Analysis**: Project, location, and attendance correlation
+
 ## 📝 Notes
 
 - The system is designed to be extensible for additional tables
 - Query generation is optimized for ClickHouse-specific functions
 - All generated queries include proper LIMIT clauses for performance
 - The LLM has deep knowledge of your workforce analytics domain
+- **NEW**: Enhanced validation supports JOIN queries and ClickHouse date functions
+- **NEW**: Multi-table schema awareness for complex project tracking queries

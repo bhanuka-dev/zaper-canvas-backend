@@ -354,8 +354,9 @@ app.post('/api/query/execute', async (req, res) => {
       } else {
         // Standard single table query
         countQuery = query.replace(/SELECT.*?FROM/i, 'SELECT COUNT(*) as total FROM');
-        // Remove ORDER BY and LIMIT from count query
-        countQuery = countQuery.replace(/ORDER BY.*?(?=LIMIT|$)/i, '');
+        // Remove ORDER BY, GROUP BY, and LIMIT from count query
+        countQuery = countQuery.replace(/ORDER BY.*?(?=LIMIT|GROUP BY|$)/i, '');
+        countQuery = countQuery.replace(/GROUP BY.*?(?=LIMIT|$)/i, '');
         countQuery = countQuery.replace(/LIMIT.*$/i, '');
 
         // Add WHERE conditions to count query
@@ -702,6 +703,257 @@ app.get('/api/tables/:tableName/locations', async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching location data:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: []
+    });
+  }
+});
+
+// Execute dummy query for card types (empty state)
+app.post('/api/query/execute/dummy', async (req, res) => {
+  try {
+    const {
+      cardType,
+      page = 1,
+      pageSize = 5
+    } = req.body;
+
+    // Validate card type
+    const validCardTypes = ['table', 'bar', 'line', 'pie', 'map', 'kpi'];
+    if (!cardType || !validCardTypes.includes(cardType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid cardType. Must be one of: ${validCardTypes.join(', ')}`,
+        data: []
+      });
+    }
+
+    let dummyData = [];
+    let totalCount = 0;
+    let dummyQuery = '';
+
+    switch (cardType) {
+      case 'table':
+        // Countries data for table
+        const countriesData = [
+          { country: 'United Arab Emirates', capital: 'Abu Dhabi', currency: 'AED', population: 9890400, continent: 'Asia' },
+          { country: 'United States', capital: 'Washington D.C.', currency: 'USD', population: 331900000, continent: 'North America' },
+          { country: 'United Kingdom', capital: 'London', currency: 'GBP', population: 67330000, continent: 'Europe' },
+          { country: 'India', capital: 'New Delhi', currency: 'INR', population: 1380000000, continent: 'Asia' },
+          { country: 'Germany', capital: 'Berlin', currency: 'EUR', population: 83240000, continent: 'Europe' },
+          { country: 'Japan', capital: 'Tokyo', currency: 'JPY', population: 125360000, continent: 'Asia' },
+          { country: 'Australia', capital: 'Canberra', currency: 'AUD', population: 25690000, continent: 'Oceania' },
+          { country: 'Canada', capital: 'Ottawa', currency: 'CAD', population: 38230000, continent: 'North America' },
+          { country: 'France', capital: 'Paris', currency: 'EUR', population: 67750000, continent: 'Europe' },
+          { country: 'Brazil', capital: 'Brasília', currency: 'BRL', population: 215300000, continent: 'South America' }
+        ];
+
+        totalCount = countriesData.length;
+        const startIndex = (page - 1) * pageSize;
+        dummyData = countriesData.slice(startIndex, startIndex + pageSize);
+        dummyQuery = 'SELECT country, capital, currency, population, continent FROM world_countries ORDER BY population DESC';
+        break;
+
+      case 'bar':
+      case 'line':
+        // Chart data - monthly sales
+        dummyData = [
+          { month: 'January', sales: 45000 },
+          { month: 'February', sales: 52000 },
+          { month: 'March', sales: 48000 },
+          { month: 'April', sales: 61000 },
+          { month: 'May', sales: 55000 },
+          { month: 'June', sales: 67000 },
+          { month: 'July', sales: 71000 },
+          { month: 'August', sales: 64000 },
+          { month: 'September', sales: 59000 },
+          { month: 'October', sales: 73000 },
+          { month: 'November', sales: 79000 },
+          { month: 'December', sales: 85000 }
+        ];
+        totalCount = dummyData.length;
+        dummyQuery = 'SELECT month, SUM(sales) FROM monthly_sales GROUP BY month ORDER BY month';
+        break;
+
+      case 'pie':
+        // Pie chart data - market share
+        dummyData = [
+          { category: 'Mobile Apps', percentage: 35 },
+          { category: 'Web Development', percentage: 28 },
+          { category: 'Cloud Services', percentage: 22 },
+          { category: 'AI/ML Solutions', percentage: 10 },
+          { category: 'IoT Projects', percentage: 5 }
+        ];
+        totalCount = dummyData.length;
+        dummyQuery = 'SELECT category, percentage FROM market_share ORDER BY percentage DESC';
+        break;
+
+      case 'map':
+        // Dubai landmarks for map
+        dummyData = [
+          {
+            lat: 25.1972,
+            lng: 55.2744,
+            name: 'Burj Khalifa',
+            type: 'landmark',
+            description: 'World\'s tallest building',
+            visitors: 15000
+          },
+          {
+            lat: 25.2048,
+            lng: 55.2708,
+            name: 'Dubai Mall',
+            type: 'shopping',
+            description: 'World\'s largest shopping mall',
+            visitors: 80000
+          },
+          {
+            lat: 25.2138,
+            lng: 55.2621,
+            name: 'Dubai Fountain',
+            type: 'attraction',
+            description: 'World\'s largest choreographed fountain',
+            visitors: 25000
+          },
+          {
+            lat: 25.1984,
+            lng: 55.2731,
+            name: 'Dubai Opera',
+            type: 'entertainment',
+            description: 'Multi-format performing arts theatre',
+            visitors: 3500
+          },
+          {
+            lat: 25.2084,
+            lng: 55.2719,
+            name: 'Souk Al Bahar',
+            type: 'shopping',
+            description: 'Traditional Arabian marketplace',
+            visitors: 12000
+          },
+          {
+            lat: 25.1946,
+            lng: 55.2727,
+            name: 'Address Downtown',
+            type: 'hotel',
+            description: 'Luxury hotel with fountain views',
+            visitors: 2500
+          }
+        ];
+        totalCount = dummyData.length;
+        dummyQuery = 'SELECT lat, lng, name, type, description, visitors FROM dubai_landmarks WHERE type IS NOT NULL';
+        break;
+
+      case 'kpi':
+        // KPI metrics
+        dummyData = [
+          {
+            metric: 'Total Revenue',
+            value: 2847500,
+            unit: 'AED',
+            change: 12.5,
+            period: 'This Month'
+          },
+          {
+            metric: 'Active Users',
+            value: 48392,
+            unit: 'users',
+            change: 8.7,
+            period: 'Last 30 Days'
+          },
+          {
+            metric: 'Conversion Rate',
+            value: 24.8,
+            unit: '%',
+            change: -2.1,
+            period: 'This Quarter'
+          },
+          {
+            metric: 'Customer Satisfaction',
+            value: 4.6,
+            unit: '/5',
+            change: 0.3,
+            period: 'Average Rating'
+          }
+        ];
+        totalCount = dummyData.length;
+        dummyQuery = 'SELECT metric, value, unit, change, period FROM kpi_metrics';
+        break;
+    }
+
+    // Calculate pagination
+    const totalPages = Math.ceil(totalCount / pageSize);
+
+    res.json({
+      success: true,
+      data: dummyData,
+      pagination: {
+        page: parseInt(page),
+        pageSize: parseInt(pageSize),
+        total: totalCount,
+        totalPages: totalPages
+      },
+      query: dummyQuery,
+      cardType: cardType,
+      isDummy: true,
+      message: `Sample ${cardType} data for demonstration purposes`
+    });
+
+  } catch (error) {
+    console.error('Error generating dummy data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error while generating dummy data',
+      data: [],
+      pagination: {
+        page: 1,
+        pageSize: 5,
+        total: 0,
+        totalPages: 0
+      }
+    });
+  }
+});
+
+// Get available columns for query validation
+app.get('/api/tables/:tableName/columns', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+
+    // Get table schema
+    const schema = await clickhouseService.getTableSchema(tableName);
+
+    if (!schema || schema.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: `Table ${tableName} not found or has no columns`,
+        data: []
+      });
+    }
+
+    // Format column information for frontend use
+    const columns = schema.map(col => ({
+      name: col.name,
+      type: col.type,
+      description: col.comment || `${col.name} field`,
+      nullable: col.type.includes('Nullable'),
+      isNumeric: col.type.includes('Int') || col.type.includes('Float') || col.type.includes('Decimal'),
+      isDate: col.type.includes('Date') || col.type.includes('DateTime'),
+      isString: col.type.includes('String'),
+      isLocation: col.name.includes('lat') || col.name.includes('lng')
+    }));
+
+    res.json({
+      success: true,
+      tableName: tableName,
+      totalColumns: columns.length,
+      data: columns
+    });
+
+  } catch (error) {
+    console.error('Error fetching columns:', error);
     res.status(500).json({
       success: false,
       error: error.message,
