@@ -108,7 +108,11 @@ class ClickHouseService {
         lower(toString(client_name)) LIKE lower('%${escapedSearch}%') OR
         lower(toString(staff_name)) LIKE lower('%${escapedSearch}%') OR
         toString(work_date) LIKE '%${escapedSearch}%' OR
-        lower(toString(ifNull(leave_type, ''))) LIKE lower('%${escapedSearch}%')
+        lower(toString(ifNull(leave_type, ''))) LIKE lower('%${escapedSearch}%') OR
+        toString(ifNull(checkin_lat, '')) LIKE '%${escapedSearch}%' OR
+        toString(ifNull(checkin_lng, '')) LIKE '%${escapedSearch}%' OR
+        toString(ifNull(checkout_lat, '')) LIKE '%${escapedSearch}%' OR
+        toString(ifNull(checkout_lng, '')) LIKE '%${escapedSearch}%'
       )`;
       conditions.push(searchCondition);
     }

@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const compression = require('compression');
 const { rateLimit } = require('express-rate-limit');
 const clickhouseService = require('./services/clickhouse-service');
+const llmService = require('./services/llm-service');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -329,23 +330,52 @@ app.post('/api/query/execute', async (req, res) => {
 
     const result = await clickhouseService.executeCustomQuery(modifiedQuery, format);
 
-    // Get total count for pagination (run original query with COUNT)
-    let countQuery = query.replace(/SELECT.*?FROM/i, 'SELECT COUNT(*) as total FROM');
-    // Remove ORDER BY and LIMIT from count query
-    countQuery = countQuery.replace(/ORDER BY.*?(?=LIMIT|$)/i, '');
-    countQuery = countQuery.replace(/LIMIT.*$/i, '');
+    // Get total count for pagination
+    let countQuery;
+    let countResult;
 
-    // Add WHERE conditions to count query
-    if (conditions.length > 0) {
-      const whereClause = `WHERE ${conditions.join(' AND ')}`;
-      if (countQuery.toUpperCase().includes('WHERE')) {
-        countQuery = countQuery.replace(/WHERE/i, `WHERE ${conditions.join(' AND ')} AND`);
+    try {
+      // Handle UNION ALL queries differently
+      if (query.toUpperCase().includes('UNION ALL')) {
+        // For UNION ALL queries, wrap the entire query in a subquery
+        let baseQuery = query;
+        // Remove ORDER BY and LIMIT from the base query
+        baseQuery = baseQuery.replace(/ORDER BY.*?(?=LIMIT|$)/i, '');
+        baseQuery = baseQuery.replace(/LIMIT.*$/i, '');
+
+        // Add WHERE conditions to both parts of UNION if needed
+        if (conditions.length > 0) {
+          const whereClause = conditions.join(' AND ');
+          // This is complex for UNION queries, so we'll wrap the whole thing
+          baseQuery = `SELECT * FROM (${baseQuery}) WHERE ${whereClause}`;
+        }
+
+        countQuery = `SELECT COUNT(*) as total FROM (${baseQuery}) as subquery`;
       } else {
-        countQuery += ` ${whereClause}`;
-      }
-    }
+        // Standard single table query
+        countQuery = query.replace(/SELECT.*?FROM/i, 'SELECT COUNT(*) as total FROM');
+        // Remove ORDER BY and LIMIT from count query
+        countQuery = countQuery.replace(/ORDER BY.*?(?=LIMIT|$)/i, '');
+        countQuery = countQuery.replace(/LIMIT.*$/i, '');
 
-    const countResult = await clickhouseService.executeCustomQuery(countQuery, format);
+        // Add WHERE conditions to count query
+        if (conditions.length > 0) {
+          const whereClause = `WHERE ${conditions.join(' AND ')}`;
+          if (countQuery.toUpperCase().includes('WHERE')) {
+            countQuery = countQuery.replace(/WHERE/i, `WHERE ${conditions.join(' AND ')} AND`);
+          } else {
+            countQuery += ` ${whereClause}`;
+          }
+        }
+      }
+
+      console.log('Count query:', countQuery);
+      countResult = await clickhouseService.executeCustomQuery(countQuery, format);
+    } catch (countError) {
+      console.warn('Count query failed, using fallback:', countError.message);
+      // Fallback: return the actual result count
+      countResult = { success: true, data: [{ total: result.data ? result.data.length : 0 }] };
+    }
     const total = countResult.data && countResult.data[0] ? countResult.data[0].total : 0;
 
     res.json({
@@ -456,6 +486,226 @@ app.get('/api/queries/:queryId/data', async (req, res) => {
         total: 0,
         totalPages: 0
       }
+    });
+  }
+});
+
+// Chat endpoint for LLM-powered query generation
+app.post('/api/chat', async (req, res) => {
+  try {
+    const {
+      message,
+      cardType,
+      tableName = 'daily_worker_summary'
+    } = req.body;
+
+    // Validate required fields
+    if (!message || !cardType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message and cardType are required',
+        data: null
+      });
+    }
+
+    // Validate card type
+    const validCardTypes = ['table', 'bar', 'line', 'pie', 'map', 'kpi'];
+    if (!validCardTypes.includes(cardType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid cardType. Must be one of: ${validCardTypes.join(', ')}`,
+        data: null
+      });
+    }
+
+    console.log(`Chat request - Card Type: ${cardType}, Message: "${message}"`);
+
+    // Process the user request with LLM
+    const result = await llmService.processUserRequest(message, cardType, tableName);
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to process chat request',
+        data: null,
+        query: result.query,
+        explanation: result.explanation
+      });
+    }
+
+    // Return successful result
+    res.json({
+      success: true,
+      data: result.data,
+      query: result.query,
+      explanation: result.explanation,
+      cardType: result.cardType,
+      columns: result.columns,
+      metadata: result.metadata,
+      tableName: tableName
+    });
+
+  } catch (error) {
+    console.error('Chat endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error while processing chat request',
+      data: null,
+      message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+    });
+  }
+});
+
+// Get available chat schemas
+app.get('/api/chat/schemas', (req, res) => {
+  try {
+    const schemas = llmService.getAvailableSchemas();
+    res.json({
+      success: true,
+      data: schemas
+    });
+  } catch (error) {
+    console.error('Error fetching chat schemas:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: {}
+    });
+  }
+});
+
+// Get schema for specific table
+app.get('/api/chat/schemas/:tableName', (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const schema = llmService.getTableSchema(tableName);
+
+    if (!schema) {
+      return res.status(404).json({
+        success: false,
+        error: `Table ${tableName} not found`,
+        data: null
+      });
+    }
+
+    res.json({
+      success: true,
+      data: schema,
+      tableName: tableName
+    });
+  } catch (error) {
+    console.error('Error fetching table schema:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: null
+    });
+  }
+});
+
+// Get location data for mapping (optimized endpoint for map visualizations)
+app.get('/api/tables/:tableName/locations', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const {
+      limit = 100,
+      type = 'checkin', // 'checkin', 'checkout', or 'both'
+      includeMetrics = 'basic' // 'basic', 'earnings', 'hours', 'all'
+    } = req.query;
+
+    // Validate table name
+    const tables = await clickhouseService.getTables();
+    const tableExists = tables.some(t => t.name === tableName);
+    if (!tableExists) {
+      return res.status(404).json({
+        success: false,
+        error: `Table ${tableName} does not exist`,
+        data: []
+      });
+    }
+
+    // Build query based on location type
+    let locationFields = '';
+    let whereClause = '';
+
+    if (type === 'checkin') {
+      locationFields = 'checkin_lat as lat, checkin_lng as lng';
+      whereClause = 'WHERE checkin_lat IS NOT NULL AND checkin_lng IS NOT NULL';
+    } else if (type === 'checkout') {
+      locationFields = 'checkout_lat as lat, checkout_lng as lng';
+      whereClause = 'WHERE checkout_lat IS NOT NULL AND checkout_lng IS NOT NULL';
+    } else if (type === 'both') {
+      // Return both check-in and check-out locations
+      const checkinQuery = `
+        SELECT
+          checkin_lat as lat,
+          checkin_lng as lng,
+          'checkin' as location_type,
+          staff_name,
+          client_name,
+          work_date,
+          ${includeMetrics === 'all' || includeMetrics === 'hours' ? 'total_work_hours,' : ''}
+          ${includeMetrics === 'all' || includeMetrics === 'earnings' ? 'total_earnings,' : ''}
+          checkin_time as timestamp
+        FROM ${tableName}
+        WHERE checkin_lat IS NOT NULL AND checkin_lng IS NOT NULL
+        LIMIT ${Math.floor(limit / 2)}
+      `;
+
+      const checkoutQuery = `
+        SELECT
+          checkout_lat as lat,
+          checkout_lng as lng,
+          'checkout' as location_type,
+          staff_name,
+          client_name,
+          work_date,
+          ${includeMetrics === 'all' || includeMetrics === 'hours' ? 'total_work_hours,' : ''}
+          ${includeMetrics === 'all' || includeMetrics === 'earnings' ? 'total_earnings,' : ''}
+          checkout_time as timestamp
+        FROM ${tableName}
+        WHERE checkout_lat IS NOT NULL AND checkout_lng IS NOT NULL
+        LIMIT ${Math.floor(limit / 2)}
+      `;
+
+      const finalQuery = `${checkinQuery} UNION ALL ${checkoutQuery}`;
+
+      const result = await clickhouseService.executeCustomQuery(finalQuery);
+      return res.json(result);
+    }
+
+    // Build metrics selection
+    let metricsFields = '';
+    if (includeMetrics === 'earnings') {
+      metricsFields = ', total_earnings, work_amount, overtime_amount';
+    } else if (includeMetrics === 'hours') {
+      metricsFields = ', total_work_hours, overtime_hours, effective_work_hours';
+    } else if (includeMetrics === 'all') {
+      metricsFields = ', total_work_hours, overtime_hours, total_earnings, work_amount';
+    }
+
+    const query = `
+      SELECT
+        ${locationFields},
+        staff_name,
+        client_name,
+        work_date
+        ${metricsFields}
+      FROM ${tableName}
+      ${whereClause}
+      ORDER BY work_date DESC
+      LIMIT ${limit}
+    `;
+
+    const result = await clickhouseService.executeCustomQuery(query);
+    res.json(result);
+
+  } catch (error) {
+    console.error('Error fetching location data:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      data: []
     });
   }
 });
