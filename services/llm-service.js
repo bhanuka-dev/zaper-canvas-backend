@@ -26,7 +26,7 @@ class LLMService {
           { name: 'total_work_hours', type: 'Decimal(9, 2)', description: 'Total work hours with 2 decimal precision' },
           { name: 'total_break_hours', type: 'Decimal(9, 2)', description: 'Total break hours' },
           { name: 'overtime_hours', type: 'Decimal(9, 2)', description: 'Overtime hours' },
-          { name: 'leave_type', type: 'LowCardinality(Nullable(String))', description: 'Leave type if absent' },
+          { name: 'leave_type', type: 'LowCardinality(Nullable(String))', description: 'Leave type if absent (NULL=present/no record, comp_off, off_day, sick_leave, unpaid_leave)' },
           { name: 'is_present', type: 'UInt8', description: 'Attendance flag (1=present, 0=absent)' },
           { name: 'has_overtime', type: 'UInt8', description: 'Overtime flag (1=has overtime, 0=no overtime)' },
           { name: 'effective_work_hours', type: 'Decimal(9, 2)', description: 'Net productive hours (total_work_hours - total_break_hours)' },
