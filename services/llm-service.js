@@ -26,7 +26,7 @@ class LLMService {
           { name: 'total_work_hours', type: 'Decimal(9, 2)', description: 'Total work hours with 2 decimal precision' },
           { name: 'total_break_hours', type: 'Decimal(9, 2)', description: 'Total break hours' },
           { name: 'overtime_hours', type: 'Decimal(9, 2)', description: 'Overtime hours' },
-          { name: 'leave_type', type: 'LowCardinality(Nullable(String))', description: 'Leave type if absent (NULL=present/no record, comp_off, off_day, sick_leave, unpaid_leave)' },
+          { name: 'leave_type', type: 'LowCardinality(Nullable(String))', description: 'Leave type if absent. Exact values: NULL (present/no record), "comp_off", "off_day", "sick_leave", "unpaid_leave"' },
           { name: 'is_present', type: 'UInt8', description: 'Attendance flag (1=present, 0=absent)' },
           { name: 'has_overtime', type: 'UInt8', description: 'Overtime flag (1=has overtime, 0=no overtime)' },
           { name: 'effective_work_hours', type: 'Decimal(9, 2)', description: 'Net productive hours (total_work_hours - total_break_hours)' },
@@ -140,6 +140,13 @@ COMMON PATTERNS:
 - For project analysis: JOIN with client_projects table on project_id
 - For location-based queries: Use latitude/longitude from both tables
 
+LEAVE_TYPE EXACT VALUES (CRITICAL):
+- For sick people: WHERE leave_type = 'sick_leave' (NOT 'sick')
+- For compensation off: WHERE leave_type = 'comp_off'
+- For regular off days: WHERE leave_type = 'off_day'
+- For unpaid leave: WHERE leave_type = 'unpaid_leave'
+- For present people: WHERE leave_type IS NULL OR is_present = 1
+
 DATETIME HANDLING (CRITICAL):
 - NEVER use AVG() directly on DateTime columns like checkin_time, checkout_time
 - For average check-in hour: AVG(toHour(checkin_time))
@@ -197,7 +204,9 @@ EXAMPLE QUERIES:
 - "Staff with poor attendance last month" (KPI) → SELECT COUNT(*) AS "Staff with Poor Attendance" FROM (SELECT staff_id FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(addMonths(today(), -1)) AND is_present = 0 GROUP BY staff_id HAVING COUNT(*) >= 3)
 - "Average attendance rate" (KPI) → SELECT AVG(attendance_score) AS "Average Attendance Rate" FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(today())
 - "Total work hours this month" (KPI) → SELECT SUM(total_work_hours) AS "Total Work Hours This Month" FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(today())
-- "How many staff worked today" (KPI) → SELECT COUNT(DISTINCT staff_id) AS "Staff Working Today" FROM daily_worker_summary WHERE work_date = today()`;
+- "How many staff worked today" (KPI) → SELECT COUNT(DISTINCT staff_id) AS "Staff Working Today" FROM daily_worker_summary WHERE work_date = today()
+- "How many people are sick all times" (KPI) → SELECT COUNT(DISTINCT staff_id) AS "People Ever Sick" FROM daily_worker_summary WHERE leave_type = 'sick_leave'
+- "People on sick leave this month" (KPI) → SELECT COUNT(DISTINCT staff_id) AS "People on Sick Leave" FROM daily_worker_summary WHERE toYYYYMM(work_date) = toYYYYMM(today()) AND leave_type = 'sick_leave'`;
   }
 
   getCorrectionAgentInstructions() {
